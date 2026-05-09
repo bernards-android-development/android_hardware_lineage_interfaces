@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <atomic>
 #define ATRACE_TAG (ATRACE_TAG_POWER | ATRACE_TAG_HAL)
 #define LOG_TAG "powerhal-libperfmgr"
 
@@ -56,7 +57,8 @@ extern bool setDeviceSpecificMode(Mode type, bool enabled);
 
 Power::Power()
     : mInteractionHandler(nullptr),
-      mSustainedPerfModeOn(false) {
+      mSustainedPerfModeOn(false),
+      mLowPowerModeOn(false) {
     mInteractionHandler = std::make_unique<InteractionHandler>();
     mInteractionHandler->Init();
 
@@ -96,42 +98,62 @@ ndk::ScopedAStatus Power::setMode(Mode type, bool enabled) {
     if (setDeviceSpecificMode(type, enabled)) {
         return ndk::ScopedAStatus::ok();
     }
+    if (type != Mode::LOW_POWER && mLowPowerModeOn) {
+        LOG(INFO) << "Power setMode: " << toString(type) << " is failed when Low Power Mode ON";
+        return ndk::ScopedAStatus::ok();
+    }
 
+    bool act_hint{};
     switch (type) {
+        case Mode::LOW_POWER:
+            mLowPowerModeOn = enabled;
+            act_hint = true;
+            break;
         case Mode::SUSTAINED_PERFORMANCE:
-            if (enabled) {
-                HintManager::GetInstance()->DoHint("SUSTAINED_PERFORMANCE");
-            }
-            mSustainedPerfModeOn = true;
+            mSustainedPerfModeOn = enabled;
+            act_hint = true;
             break;
         case Mode::LAUNCH:
-            if (mSustainedPerfModeOn) {
+            if (mSustainedPerfModeOn || mLowPowerModeOn) {
                 break;
             }
-            [[fallthrough]];
-        case Mode::DOUBLE_TAP_TO_WAKE:
-            [[fallthrough]];
-        case Mode::FIXED_PERFORMANCE:
-            [[fallthrough]];
-        case Mode::EXPENSIVE_RENDERING:
-            [[fallthrough]];
-        case Mode::INTERACTIVE:
-            [[fallthrough]];
-        case Mode::DEVICE_IDLE:
-            [[fallthrough]];
-        case Mode::DISPLAY_INACTIVE:
-            [[fallthrough]];
-        case Mode::AUDIO_STREAMING_LOW_LATENCY:
-            [[fallthrough]];
-        case Mode::GAME_LOADING:
-            [[fallthrough]];
-        default:
-            if (enabled) {
-                HintManager::GetInstance()->DoHint(toString(type));
-            } else {
-                HintManager::GetInstance()->EndHint(toString(type));
-            }
+            act_hint = true;
             break;
+        case Mode::DOUBLE_TAP_TO_WAKE:
+            act_hint = true;
+            break;
+        case Mode::FIXED_PERFORMANCE:
+            act_hint = true;
+            break;
+        case Mode::EXPENSIVE_RENDERING:
+            act_hint = true;
+            break;
+        case Mode::INTERACTIVE:
+            act_hint = true;
+            break;
+        case Mode::DEVICE_IDLE:
+            act_hint = true;
+            break;
+        case Mode::DISPLAY_INACTIVE:
+            act_hint = true;
+            break;
+        case Mode::AUDIO_STREAMING_LOW_LATENCY:
+            act_hint = true;
+            break;
+        case Mode::GAME_LOADING:
+            act_hint = true;
+            break;
+        default:
+            LOG(DEBUG) << "Power setMode: " << toString(type) << " failed: not support!";
+            break;
+    }
+
+    if (act_hint) {
+        if (enabled) {
+            HintManager::GetInstance()->DoHint(toString(type));
+        } else {
+            HintManager::GetInstance()->EndHint(toString(type));
+        }
     }
 
     return ndk::ScopedAStatus::ok();
@@ -152,7 +174,7 @@ ndk::ScopedAStatus Power::setBoost(Boost type, int32_t durationMs) {
     ATRACE_NAME(("B:" + toString(type) + ":" + std::to_string(durationMs)).c_str());
     switch (type) {
         case Boost::INTERACTION:
-            if (mSustainedPerfModeOn) {
+            if (mSustainedPerfModeOn || mLowPowerModeOn) {
                 break;
             }
             mInteractionHandler->Acquire(durationMs);
@@ -164,7 +186,7 @@ ndk::ScopedAStatus Power::setBoost(Boost type, int32_t durationMs) {
         case Boost::AUDIO_LAUNCH:
             [[fallthrough]];
         default:
-            if (mSustainedPerfModeOn) {
+            if (mSustainedPerfModeOn || mLowPowerModeOn) {
                 break;
             }
             if (durationMs > 0) {
